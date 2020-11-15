@@ -1,11 +1,13 @@
 import java.util.*
 import java.io.*
 import java.math.*
+import kotlin.math.abs
 
-/**
- * Auto-generated code below aims at helping you parse
- * the standard input according to the problem statement.
- **/
+val INVENTORY_SIZE = 10
+val IDEAL_INVENTORY = intArrayOf(4,2,2,2)
+val LOOK_FORWARD_TURNS = 8
+val TURN_PRICE = 5
+
 fun main(args : Array<String>) {
     val input = Scanner(System.`in`)
 
@@ -32,7 +34,7 @@ fun main(args : Array<String>) {
             actions.add(Action(
                     actionId,
                     actionType,
-                    arrayOf<Int>(delta0, delta1, delta2, delta3),
+                    intArrayOf(delta0, delta1, delta2, delta3),
                     price,
                     tomeIndex,
                     taxCount,
@@ -48,44 +50,155 @@ fun main(args : Array<String>) {
             val score = input.nextInt() // amount of rupees
 
             players.add(Player(
-                    arrayOf<Int>(inv0, inv1, inv2, inv3),
+                    intArrayOf(inv0, inv1, inv2, inv3),
                     score))
         }
 
-        val bestAction = actions.filter { a -> canTakeAction(players[0], a) }.maxBy { a -> a.price }
+        val me = players[0]
+        val potions = actions.filter { a -> a.actionType == "BREW" }
+        val mySpells = actions.filter { a -> a.actionType == "CAST" }
+        val theirSpells = actions.filter { a -> a.actionType == "OPPONENT_CAST" }
 
         // Write an action using println()
         // To debug: System.err.println("Debug messages...");
         // in the first league: BREW <id> | WAIT; later: BREW <id> | CAST <id> [<times>] | LEARN <id> | REST | WAIT
-        if ( bestAction == null) {
-            println("WAIT")
+
+        val nearbyPotions = getNearbyPotions(me, mySpells, potions, LOOK_FORWARD_TURNS)
+        val bestPotionPath = nearbyPotions.maxBy { it.key.price - it.value.size * TURN_PRICE }
+
+        System.err.println("=== Inventory ===")
+        System.err.println(me.inventory.joinToString())
+        System.err.println("=== Nearby Potions ===")
+        System.err.println(nearbyPotions.entries.joinToString("\n"))
+        System.err.println("=== Best Potion ===")
+        System.err.println(bestPotionPath)
+
+        if ( bestPotionPath == null ) {
+            val bestSpell = getBestSpell(me, mySpells)
+            when {
+                bestSpell == null -> println("REST")
+                else -> { println("CAST " + bestSpell.id) }
+            }
         } else {
-            println("BREW " + bestAction.id)
+            when {
+                bestPotionPath.value.isEmpty() -> println("BREW " + bestPotionPath.key.id)
+                bestPotionPath.value[0] == null -> println("REST")
+                bestPotionPath.value[0] != null -> println("CAST " + bestPotionPath.value[0]!!.id)
+            }
         }
     }
 }
 
-fun canTakeAction(player:Player, action:Action) : Boolean {
-    for (i in 0 until 4) {
-        if (player.inventory[i] - action.delta[i] < 0) {
+fun getBestSpell(player:Player, spells:List<Action>) : Action? {
+    val currentDistance = player.inventory.minusMerge(IDEAL_INVENTORY).sumBy { i -> abs(i) }
+
+    return spells.filter { s -> player.canTakeAction(s) }
+            .map { s -> Pair(s, player.inventory.merge(s.delta).minusMerge(IDEAL_INVENTORY).sumBy { i -> abs(i) }) }
+            .filter { p -> p.second <= currentDistance }
+            .minBy { p -> p.second }?.first
+}
+
+fun getNearbyPotions(player:Player, spells:List<Action>, potions:List<Action>, steps:Int) : Map<Action,List<Action?>> {
+    val castableSpells = spells.map { s -> Action(s.id, s.actionType, s.delta, s.price, s.tomeIndex, s.taxCount, true, s.repeatable) }.toSet()
+    var states = setOf<State>(State(listOf<Action>(), spells.toSet(), player))
+
+    val possiblePotions = mutableMapOf<Action, List<Action?>>()
+
+    for (i in 0 until steps) {
+        //System.err.println("=== STATES ===")
+        //System.err.println(states)
+
+        // if we can make a new potion add it to the list
+
+        states.forEach {
+            s -> potions.filter { p -> s.player.canTakeAction(p) }.forEach { p -> possiblePotions.putIfAbsent(p, s.castSpells) }
+        }
+
+        // if not try casting some spells or resting
+
+        states = states.flatMap { state ->
+            val newStates = state.availableSpells.filter { spell -> state.player.canTakeAction(spell) }.map {
+                spell -> State(state.castSpells.plus(spell), state.availableSpells.minus(spell), Player(state.player.inventory.merge(spell.delta),0))
+            }.toMutableList()
+
+            if (state.availableSpells.isEmpty() || state.availableSpells.size < castableSpells.size || state.availableSpells.any { !it.castable } ) {
+                newStates.add(State(state.castSpells.plusElement(null), castableSpells, state.player))
+            }
+
+            newStates.toList()
+        }.toSet()
+    }
+
+    return possiblePotions
+}
+
+class State(
+        val castSpells:List<Action?>,
+        val availableSpells:Set<Action>,
+        val player:Player
+) {
+    override fun toString(): String {
+        return "\nInventory: " + player.inventory.joinToString() + "\nAvailableSpells: " + availableSpells + "\nCastSpells: " + castSpells + "\n"
+    }
+}
+
+fun Player.canTakeAction(action:Action) : Boolean {
+    when (action.actionType) {
+        "CAST" -> {
+            if (!action.castable) {
+                return false
+            }
+        }
+        "OPPONENT_CAST" -> {
             return false
         }
     }
+
+    val result = inventory.merge(action.delta)
+
+    if (result.any { i -> i < 0 }) {
+        return false
+    }
+
+    if (result.sum() > INVENTORY_SIZE) {
+        return false
+    }
+
     return true
+}
+
+fun IntArray.minusMerge(other:IntArray) : IntArray {
+    if (other.size != this.size) {
+        throw InputMismatchException("Attempting to merge IntArrays of different lengths")
+    }
+
+    return this.zip(other).map { (a,b) -> a - b }.toIntArray()
+}
+
+fun IntArray.merge(other:IntArray) : IntArray {
+    if (other.size != this.size) {
+        throw InputMismatchException("Attempting to merge IntArrays of different lengths")
+    }
+
+    return this.zip(other).map { (a,b) -> a + b }.toIntArray()
 }
 
 class Action (
         val id:Int,
         val actionType:String,
-        val delta:Array<Int>,
+        val delta:IntArray,
         val price:Int,
         val tomeIndex:Int,
         val taxCount:Int,
         val castable:Boolean,
         val repeatable:Boolean
-)
+) {
+    override fun toString(): String {
+        return id.toString() + ":[" + delta.joinToString() + "]"
+    }
+}
 
 class Player (
-        val inventory:Array<Int>,
+        val inventory:IntArray,
         val score:Int
 )
