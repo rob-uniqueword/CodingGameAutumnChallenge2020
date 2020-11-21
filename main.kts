@@ -6,8 +6,10 @@ import kotlin.math.abs
 val INVENTORY_SIZE = 10
 val IDEAL_INVENTORY = intArrayOf(4,2,2,2)
 val LOOK_FORWARD_TURNS = 5
-val TURN_PRICE = 5
-val INGREDIENT_VALUES = intArrayOf(1,2,2,2)
+val TURN_PRICE = 3
+val INGREDIENT_VALUES = intArrayOf(1,5,6,7)
+
+var TURN = 0
 
 fun main(args : Array<String>) {
     val input = Scanner(System.`in`)
@@ -65,6 +67,8 @@ fun main(args : Array<String>) {
         // To debug: System.err.println("Debug messages...");
         // in the first league: BREW <id> | WAIT; later: BREW <id> | CAST <id> [<times>] | LEARN <id> | REST | WAIT
         println(getBestAction(me, mySpells, potions, learnableSpells))
+
+        TURN++;
     }
 }
 
@@ -75,7 +79,7 @@ fun getBestAction(me:Player, mySpells:List<Action>, potions:List<Action>, learna
     System.err.println(nearbyPotions.entries.joinToString("\n"))
 
     if (!nearbyPotions.isEmpty()) {
-        val bestPotionPath = nearbyPotions.maxBy { it.key.price - it.value.size * TURN_PRICE }!!
+        val bestPotionPath = nearbyPotions.maxBy { it.key.price + it.key.taxCount - it.value.size * TURN_PRICE }!!
         when {
             bestPotionPath.value.isEmpty() -> return "BREW " + bestPotionPath.key.id
             bestPotionPath.value[0] == null -> return "REST"
@@ -104,24 +108,41 @@ fun getBestSpellToLearn(player:Player, playerSpells:List<Action>, learnableSpell
 
     val availableSpellsWithScore = learnableSpells
             .filter { s -> player.canTakeAction(s) }
-            .map { s -> Pair(s, s.delta.withIndex().sumBy { (i,n) -> n * INGREDIENT_VALUES[i] } + s.taxCount) }
+            .map { s -> Pair(s, getNewSpellValue(s)) }
 
     System.err.println("=== Learnable Spells ===")
     System.err.println(availableSpellsWithScore.joinToString("\n"))
 
     return availableSpellsWithScore
-            .filter { (s,v) -> v > bestPlayerSpellValue }
+            .filter { (s,v) -> v >= bestPlayerSpellValue || TURN < 5 }
             .maxBy { (s,v) -> v }
             ?.first
 }
 
+fun getNewSpellValue(spell:Action) : Int {
+    var ingredientValue = spell.delta.withIndex().sumBy { (i,n) -> n * INGREDIENT_VALUES[i] }
+
+    if (spell.delta.all { it >= 0 }) {
+        ingredientValue *= 2
+    }
+
+    return ingredientValue + spell.taxCount - spell.index!!
+}
+
 fun getBestSpellToCast(player:Player, spells:List<Action>) : Action? {
+    val currentValue = player.inventory.withIndex().sumBy { (i,n) -> n * INGREDIENT_VALUES[i] }
     val currentDistance = player.inventory.minusMerge(IDEAL_INVENTORY).sumBy { i -> abs(i) }
 
-    return spells.filter { s -> player.canTakeAction(s) }
-            .map { s -> Pair(s, player.inventory.merge(s.delta).minusMerge(IDEAL_INVENTORY).sumBy { i -> abs(i) }) }
-            .filter { p -> p.second <= currentDistance }
-            .minBy { p -> p.second }?.first
+    val availableSpellValues = spells.filter { player.canTakeAction(it) }.map {
+        s -> Triple(
+            s,
+            player.inventory.merge(s.delta).withIndex().sumBy { (i,n) -> n * INGREDIENT_VALUES[i] },
+            player.inventory.merge(s.delta).minusMerge(IDEAL_INVENTORY).sumBy { i -> abs(i) })
+    }
+
+    return availableSpellValues.filter { (s,v,d) -> v >= currentValue || (v == currentValue && d >= currentDistance) }
+            .sortedWith(compareBy<Triple<Action, Int, Int>> { it.second }.thenByDescending<Triple<Action, Int, Int>> { it.third })
+            .firstOrNull()?.first
 }
 
 fun getNearbyPotions(player:Player, spells:List<Action>, potions:List<Action>, steps:Int) : Map<Action,List<Action?>> {
@@ -172,9 +193,7 @@ fun Player.canTakeAction(action:Action) : Boolean {
     when (action.actionType) {
         "BREW" -> return inventory.merge(action.delta).isViableInventory()
         "CAST" -> return action.castable && inventory.merge(action.delta).isViableInventory()
-        "LEARN" -> {
-            return inventory[0] >= action.index!!
-        }
+        "LEARN" -> return inventory[0] >= action.index!!
         else -> { return false }
     }
 }
